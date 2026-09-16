@@ -31,8 +31,8 @@ jobs:
         run: |
           fmt='%H %h %an (%(trailers:key=Co-authored-by,valueonly=true,separator=%x2C )): %s'
           # Commits already on production via `git cherry-pick -x` from main.
-          picked=$(git log origin/main..origin/production --format=%b | sed -nE 's/.*\(cherry picked from commit ([0-9a-f]{40})\).*/\1/p')
-          all=$(git log origin/production..origin/main --pretty=format:"$fmt" | sed -E 's/ <[^>]*>//g; s/ \(\)//')
+          picked=$(git log origin/production --grep='cherry picked from commit' --format=%b | sed -nE 's/.*\(cherry picked from commit ([0-9a-f]{40})\).*/\1/p')
+          all=$(git log --first-parent origin/production..origin/main --pretty=format:"$fmt" | sed -E 's/ <[^>]*>//g; s/ \(\)//')
           commits=$(awk -v picked="$picked" 'BEGIN{split(picked,a,/[[:space:]]+/); for(i in a) if(a[i]!="") skip[a[i]]=1} !skip[$1]{sub(/^[^ ]+ /,""); print}' <<<"$all")
           already=$(awk -v picked="$picked" 'BEGIN{split(picked,a,/[[:space:]]+/); for(i in a) if(a[i]!="") skip[a[i]]=1} skip[$1]{sub(/^[^ ]+ /,""); print}' <<<"$all")
           if [ -z "$all" ]; then
