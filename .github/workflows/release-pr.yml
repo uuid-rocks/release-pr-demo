@@ -1,0 +1,57 @@
+name: Release PR
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: release-pr
+  cancel-in-progress: true
+
+jobs:
+  release-pr:
+    name: Open or update release PR
+    runs-on: blacksmith
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Open or update release PR
+        shell: bash
+        run: |
+          commits=$(git log origin/production..origin/main --pretty=format:'%h %an (%(trailers:key=Co-authored-by,valueonly=true,separator=%x2C )): %s' | sed -E 's/ <[^>]*>//g; s/ \(\)//')
+          if [ -z "$commits" ]; then
+            echo "production is up to date with main; nothing to release"
+            exit 0
+          fi
+
+          prefix="Release $(date -u +%Y.%-m)."
+          last=$(gh pr list --base production --head main --state merged --limit 1 --json title --jq '.[0].title')
+          if [[ "$last" =~ ^"$prefix"([0-9]+)$ ]]; then
+            n=$((BASH_REMATCH[1] + 1))
+          else
+            n=0
+          fi
+          title="${prefix}${n}"
+
+          body=$(mktemp)
+          {
+            echo '```'
+            echo "$commits"
+            echo '```'
+          } > "$body"
+          existing=$(gh pr list --base production --head main --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$title" --body-file "$body"
+          else
+            gh pr create --base production --head main --title "$title" --body-file "$body"
+          fi

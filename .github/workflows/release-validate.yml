@@ -1,0 +1,19 @@
+name: Release validation
+
+on:
+  pull_request:
+    branches: [production]
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: blacksmith
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Show what this release would ship
+        run: |
+          echo "event=${{ github.event.action }} actor=${{ github.actor }}"
+          git log --oneline origin/${{ github.base_ref }}..origin/${{ github.head_ref }}
