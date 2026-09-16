@@ -1,2 +1,2 @@
-greeting=hello
-color=green
+greeting=hi there
+color=blue
