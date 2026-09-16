@@ -2,7 +2,7 @@ name: Release PR
 
 on:
   push:
-    branches: [main]
+    branches: [main, production]
   workflow_dispatch:
 
 permissions:
@@ -29,8 +29,13 @@ jobs:
       - name: Open or update release PR
         shell: bash
         run: |
-          commits=$(git log origin/production..origin/main --pretty=format:'%h %an (%(trailers:key=Co-authored-by,valueonly=true,separator=%x2C )): %s' | sed -E 's/ <[^>]*>//g; s/ \(\)//')
-          if [ -z "$commits" ]; then
+          fmt='%H %h %an (%(trailers:key=Co-authored-by,valueonly=true,separator=%x2C )): %s'
+          # Commits already on production via `git cherry-pick -x` from main.
+          picked=$(git log origin/main..origin/production --format=%b | sed -nE 's/.*\(cherry picked from commit ([0-9a-f]{40})\).*/\1/p')
+          all=$(git log origin/production..origin/main --pretty=format:"$fmt" | sed -E 's/ <[^>]*>//g; s/ \(\)//')
+          commits=$(awk -v picked="$picked" 'BEGIN{split(picked,a,/[[:space:]]+/); for(i in a) if(a[i]!="") skip[a[i]]=1} !skip[$1]{sub(/^[^ ]+ /,""); print}' <<<"$all")
+          already=$(awk -v picked="$picked" 'BEGIN{split(picked,a,/[[:space:]]+/); for(i in a) if(a[i]!="") skip[a[i]]=1} skip[$1]{sub(/^[^ ]+ /,""); print}' <<<"$all")
+          if [ -z "$all" ]; then
             echo "production is up to date with main; nothing to release"
             exit 0
           fi
@@ -46,9 +51,20 @@ jobs:
 
           body=$(mktemp)
           {
-            echo '```'
-            echo "$commits"
-            echo '```'
+            if [ -n "$commits" ]; then
+              echo '```'
+              echo "$commits"
+              echo '```'
+            else
+              echo "Everything on main is already on production via hotfix; merging only reconciles history."
+            fi
+            if [ -n "$already" ]; then
+              echo
+              echo "Already on production (cherry-picked hotfix):"
+              echo '```'
+              echo "$already"
+              echo '```'
+            fi
           } > "$body"
           existing=$(gh pr list --base production --head main --state open --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
