@@ -46,4 +46,16 @@ The next release merge is clean: both sides carry the same edit.
 | [#14](../../pull/14) | Workflow change: `--first-parent` so a back-merge is one line, and scan all of `production` for cherry-pick trailers. |
 | [#6](../../pull/6) | `Release 2026.9.1` merged. `production..main` empty. |
 
+## Fast-forward promotion (same SHA on staging and production)
+
+GitHub has no fast-forward merge method: merge and squash create a new commit, and "rebase and merge" rewrites commits even when a fast-forward was possible. To deploy the exact SHA that ran on staging, something has to `git push origin <sha>:production` directly.
+
+| PR | What |
+| --- | --- |
+| [#16](../../pull/16) | `Release 2026.9.2`, opened by the workflow as usual. `git push origin main:production` was first **rejected as non-fast-forward**: every earlier release was a merge commit, so `production` had commits `main` lacked. |
+| [#17](../../pull/17) | Merge `production` into `main` (merge commit) so `production` is an ancestor of `main`. |
+| [#16](../../pull/16) | Retry: the push fast-forwarded, `main == production == ebc9dbd`, and GitHub marked #16 **merged** with that SHA as its merge commit, without anyone clicking merge. |
+
+What this needs: `production` must always be an ancestor of `main`, so releases are never merge commits, and any hotfix that puts a commit on `production` outside `main` (both hotfix A and B above) has to be merged back into `main` with a merge commit before the next release can fast-forward. The push also needs a token that bypasses `production`'s ruleset; `GITHUB_TOKEN` can't (the `production` ruleset here has repo admins as a bypass actor for the experiment).
+
 Open release PRs: [`base:production is:open`](../../pulls?q=is%3Apr+is%3Aopen+base%3Aproduction).
