@@ -1,9 +1,11 @@
 name: Release
 
-# Fast-forwards production to the release PR's head when the `release` label is added.
-# The merge button is disabled by production's "Restrict updates" ruleset; the deploy key
-# used here is the ruleset's only bypass actor.
+# Fast-forwards production to the release PR's head. Triggered by a `/release` comment on
+# the PR or by adding the `release` label. The merge button is disabled by production's
+# "Restrict updates" ruleset; the deploy key used here is the ruleset's only bypass actor.
 on:
+  issue_comment:
+    types: [created]
   pull_request:
     types: [labeled]
     branches: [production]
@@ -18,16 +20,39 @@ concurrency:
 
 jobs:
   release:
-    if: github.event.label.name == 'release' && github.event.pull_request.head.ref == 'main'
+    if: >-
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.body == '/release')
+      || (github.event_name == 'pull_request' && github.event.label.name == 'release')
     name: Fast-forward production
     runs-on: blacksmith
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
-      PR: ${{ github.event.pull_request.number }}
-      SHA: ${{ github.event.pull_request.head.sha }}
-      TITLE: ${{ github.event.pull_request.title }}
+      PR: ${{ github.event.issue.number || github.event.pull_request.number }}
+      COMMENT_ID: ${{ github.event.comment.id }}
     steps:
+      - name: Check who asked and which PR this is
+        id: pr
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            perm=$(gh api "repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission" --jq .permission)
+            case "$perm" in admin|maintain|write) ;; *)
+              gh api -X POST "repos/${{ github.repository }}/issues/comments/$COMMENT_ID/reactions" -f content=-1 >/dev/null
+              echo "::error::${{ github.actor }} has $perm permission; write is required to release"; exit 1;;
+            esac
+            gh api -X POST "repos/${{ github.repository }}/issues/comments/$COMMENT_ID/reactions" -f content=eyes >/dev/null
+          fi
+          gh pr view "$PR" --json baseRefName,headRefName,headRefOid,title,state --jq '
+            "base=\(.baseRefName)\nhead=\(.headRefName)\nsha=\(.headRefOid)\ntitle=\(.title)\nstate=\(.state)"' >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Refuse anything but the open main -> production PR
+        if: steps.pr.outputs.base != 'production' || steps.pr.outputs.head != 'main' || steps.pr.outputs.state != 'OPEN'
+        run: |
+          gh pr comment "$PR" --body "Release blocked: only the open \`main -> production\` release PR can be released this way."
+          exit 1
+
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -43,8 +68,11 @@ jobs:
 
       - name: Fast-forward production and tag
         shell: bash
+        env:
+          SHA: ${{ steps.pr.outputs.sha }}
+          TITLE: ${{ steps.pr.outputs.title }}
         run: |
-          fail() { gh pr comment "$PR" --body "Release blocked: $1"; gh pr edit "$PR" --remove-label release; exit 1; }
+          fail() { gh pr comment "$PR" --body "Release blocked: $1"; gh pr edit "$PR" --remove-label release 2>/dev/null || true; exit 1; }
 
           state=$(gh pr view "$PR" --json reviewDecision,statusCheckRollup --jq '{d: .reviewDecision, bad: [.statusCheckRollup[] | select(.conclusion != null and .conclusion != "SUCCESS" and .conclusion != "NEUTRAL" and .conclusion != "SKIPPED") | .name]}')
           decision=$(jq -r .d <<<"$state"); bad=$(jq -r '.bad | join(", ")' <<<"$state")
@@ -52,10 +80,11 @@ jobs:
           [ -n "$bad" ] && fail "failing checks: $bad"
 
           git merge-base --is-ancestor origin/production "$SHA" \
-            || fail "production has commits that are not on main (a hotfix landed?). Merge production into main with a merge commit, then re-apply the label."
+            || fail "production has commits that are not on main (a hotfix landed?). Merge production into main with a merge commit, then run /release again."
 
           tag="release/${TITLE#Release }"
           git push git@github.com:${{ github.repository }}.git "$SHA:refs/heads/production"
           git tag "$tag" "$SHA"
           git push git@github.com:${{ github.repository }}.git "refs/tags/$tag"
-          gh pr comment "$PR" --body "Released \`${SHA:0:7}\` to production as \`$tag\` (fast-forward, same SHA as main)."
+          gh pr comment "$PR" --body "Released \`${SHA:0:7}\` to production as \`$tag\` (fast-forward, same SHA as main). Requested by @${{ github.actor }}."
+          [ -n "$COMMENT_ID" ] && gh api -X POST "repos/${{ github.repository }}/issues/comments/$COMMENT_ID/reactions" -f content=rocket >/dev/null || true
