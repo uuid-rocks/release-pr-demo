@@ -1,0 +1,61 @@
+name: Release
+
+# Fast-forwards production to the release PR's head when the `release` label is added.
+# The merge button is disabled by production's "Restrict updates" ruleset; the deploy key
+# used here is the ruleset's only bypass actor.
+on:
+  pull_request:
+    types: [labeled]
+    branches: [production]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.label.name == 'release' && github.event.pull_request.head.ref == 'main'
+    name: Fast-forward production
+    runs-on: blacksmith
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+      TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install deploy key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.RELEASE_DEPLOY_KEY }}" > ~/.ssh/release_key
+          chmod 600 ~/.ssh/release_key
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/release_key -o IdentitiesOnly=yes" >> "$GITHUB_ENV"
+
+      - name: Fast-forward production and tag
+        shell: bash
+        run: |
+          fail() { gh pr comment "$PR" --body "Release blocked: $1"; gh pr edit "$PR" --remove-label release; exit 1; }
+
+          state=$(gh pr view "$PR" --json reviewDecision,statusCheckRollup --jq '{d: .reviewDecision, bad: [.statusCheckRollup[] | select(.conclusion != null and .conclusion != "SUCCESS" and .conclusion != "NEUTRAL" and .conclusion != "SKIPPED") | .name]}')
+          decision=$(jq -r .d <<<"$state"); bad=$(jq -r '.bad | join(", ")' <<<"$state")
+          [ "$decision" = "CHANGES_REQUESTED" ] && fail "changes requested on the PR"
+          [ -n "$bad" ] && fail "failing checks: $bad"
+
+          git merge-base --is-ancestor origin/production "$SHA" \
+            || fail "production has commits that are not on main (a hotfix landed?). Merge production into main with a merge commit, then re-apply the label."
+
+          tag="release/${TITLE#Release }"
+          git push git@github.com:${{ github.repository }}.git "$SHA:refs/heads/production"
+          git tag "$tag" "$SHA"
+          git push git@github.com:${{ github.repository }}.git "refs/tags/$tag"
+          gh pr comment "$PR" --body "Released \`${SHA:0:7}\` to production as \`$tag\` (fast-forward, same SHA as main)."
