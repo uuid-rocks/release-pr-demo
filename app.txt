@@ -1,3 +1,4 @@
 greeting=hi there!
 color=red
 risky_feature=on
+probe=2
